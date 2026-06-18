@@ -1,11 +1,11 @@
-# Spike: Streaming WS-Bridged Guardrail in Kong (`ai-cato-guard`)
+# Spike: Streaming WS-Bridged Guardrail in Kong (`ai-cato-networks-guard`)
 
 **Status:** Proposed — throwaway spike, not production code
 **Branch:** `claude/determined-brahmagupta-ch4ywa`
 **Owner:** AI gateway / guardrails
 **Time-box:** ~1–2 days
 **Decision gate:** Does step 1 (incremental client output from the `access`
-phase) work in this Kong build? If yes → proceed to the full `ai-cato-guard`
+phase) work in this Kong build? If yes → proceed to the full `ai-cato-networks-guard`
 plugin plan with the takeover bridge. If no → the streaming guardrail must be a
 sidecar service, and we re-open that decision with stakeholders.
 
@@ -13,14 +13,14 @@ sidecar service, and we re-open that decision with stakeholders.
 
 ## 1. Why this spike exists
 
-We want a Kong plugin that applies a Cato guardrail to **streaming** LLM
+We want a Kong plugin that applies a Cato Networks guardrail to **streaming** LLM
 responses with the following semantics (the hard requirement):
 
-> Receive chunks from the upstream LLM, forward them over a WebSocket to Cato,
+> Receive chunks from the upstream LLM, forward them over a WebSocket to Cato Networks,
 > and **withhold them from the waiting client** while that happens. Only once
-> Cato returns a verdict do we forward chunks to the client — emitting exactly
-> the chunks Cato clears, **possibly in a modified (redacted/rewritten) form**,
-> and never emitting a chunk Cato decides to block.
+> Cato Networks returns a verdict do we forward chunks to the client — emitting exactly
+> the chunks Cato Networks clears, **possibly in a modified (redacted/rewritten) form**,
+> and never emitting a chunk Cato Networks decides to block.
 
 This is byte-for-byte the contract of litellm's
 `async_post_call_streaming_iterator_hook` (`verified_chunk` → emit
@@ -30,7 +30,7 @@ expressed in Lua.
 ### Why the obvious approaches don't work
 
 - **Kong AI filter pipeline / `body_filter`** — `body_filter` runs after the
-  content phase and **cannot use cosockets**, so it cannot call Cato over the
+  content phase and **cannot use cosockets**, so it cannot call Cato Networks over the
   network. Confirmed: `git grep` for `ngx.flush|ngx.eof|body_reader|websocket`
   across `kong/plugins/**` and `kong/llm/**` returns nothing — no plugin does
   network I/O or streamed output there.
@@ -53,14 +53,14 @@ streaming proxy**, running entirely in the `access` phase (the earliest phase
 where cosockets are legal). It:
 
 1. opens the upstream LLM stream itself (`httpc:connect` + `res.body_reader`),
-2. opens an outbound WS to Cato (`resty.websocket.client`),
+2. opens an outbound WS to Cato Networks (`resty.websocket.client`),
 3. bridges them with a **hold-back buffer**, and
 4. streams cleared/modified chunks to the client via `ngx.print` + `ngx.flush`,
    finishing with `ngx.eof` / `ngx.exit(ngx.HTTP_OK)` — bypassing `proxy_pass`.
 
 The read rate (LLM→WS) and the emit rate (WS-verdict→client) are **decoupled**:
 nothing reaches the client as a side effect of a read. Every `ngx.print` is a
-deliberate decision driven by a Cato verdict.
+deliberate decision driven by a Cato Networks verdict.
 
 ---
 
@@ -86,14 +86,14 @@ spike/
     schema.lua           -- minimal: upstream_url, cato_ws_url, fail_open
   mocks/
     sse_upstream.lua     -- mock LLM: emits N SSE chunks with delays
-    cato_ws_echo.lua     -- mock Cato WS: DECOUPLED verdicts (not 1:1 echo)
+    cato_networks_ws_echo.lua     -- mock Cato Networks WS: DECOUPLED verdicts (not 1:1 echo)
   run/
     kong.conf            -- loads spike-stream-bridge as a custom plugin
     test.sh              -- curl -N driver + assertions
   NOTES.md               -- findings, latency numbers, go/no-go call
 ```
 
-Everything is hardcoded. Mocks only. No real Cato, no auth, no provider
+Everything is hardcoded. Mocks only. No real Cato Networks, no auth, no provider
 normalization.
 
 ---
@@ -133,13 +133,13 @@ emits them (not all at once after the body completes).
 ### Step 3 — Outbound WS round-trip from `access`
 
 `resty.websocket.client:connect("ws://mock")`, `send_text` / `recv_frame`
-against `cato_ws_echo.lua`. **Pass:** cosocket works in `access`; record added
+against `cato_networks_ws_echo.lua`. **Pass:** cosocket works in `access`; record added
 per-chunk latency.
 
 ### Step 4 — The full duplex bridge with hold-back buffer
 
 Wire it together using the **`data_plane.lua` thread/semaphore pattern**, not a
-single loop, because verdicts are **not 1:1** with reads (Cato may consume N
+single loop, because verdicts are **not 1:1** with reads (Cato Networks may consume N
 chunks of lookahead before clearing M):
 
 - **upstream-reader thread:** LLM `body_reader` → append to buffer (indexed) →
@@ -148,7 +148,7 @@ chunks of lookahead before clearing M):
   emit side
 - **emit side:** `ngx.print` + `ngx.flush` exactly the chunks the verdict
   clears, using the **bytes the verdict carries** (so modified/redacted chunks
-  are emitted verbatim from Cato, not from the buffer)
+  are emitted verbatim from Cato Networks, not from the buffer)
 - coordinated by `ngx.semaphore`; joined by `ngx.thread.wait`
 
 Honor the three control signals:
@@ -156,7 +156,7 @@ Honor the three control signals:
 - `blocking_message` → stop, emit an error SSE event, `ngx.eof`
 - `done` → `ngx.eof`
 
-`cato_ws_echo.lua` **must** model decoupling: e.g. consume 3 chunks, then emit
+`cato_networks_ws_echo.lua` **must** model decoupling: e.g. consume 3 chunks, then emit
 "clear chunk 1 (modified)", "hold", "block at chunk 3" — so the spike actually
 exercises the lookahead gap and the buffer.
 
@@ -168,20 +168,20 @@ exercises the lookahead gap and the buffer.
   a config flag and test both.
 - **Upstream timeout / WS timeout:** clean teardown, no orphaned cosockets.
 - **Hold-back safety (security-critical):** with a mock that blocks at chunk 3,
-  assert the client receives chunks 1–2 (or 0, per Cato lookahead) plus the
+  assert the client receives chunks 1–2 (or 0, per Cato Networks lookahead) plus the
   error event, and **never** the bytes of chunk 3.
 
 ---
 
 ## 5. Out of scope for the spike
 
-- Real Cato protocol, auth headers, TLS to Cato
+- Real Cato Networks protocol, auth headers, TLS to Cato Networks
 - ai-proxy loopback integration / provider normalization / analytics
 - Multi-provider SSE formats (OpenAI vs Anthropic vs Bedrock framing)
 - Non-streaming REST guardrail path (stays on the normal Kong AI filter chain)
 - Schema polish, config validation, multi-tenant concerns
 
-These belong to the full `ai-cato-guard` plan, gated on this spike passing.
+These belong to the full `ai-cato-networks-guard` plan, gated on this spike passing.
 
 ---
 
@@ -203,28 +203,28 @@ For reference — the shape the production plugin would take, not part of the
 spike:
 
 ```
-kong/plugins/ai-cato-guard/
+kong/plugins/ai-cato-networks-guard/
   handler.lua            -- branch: streaming → bridge; else → REST filters
   schema.lua             -- api_key, api_base, app_name, timeout, fail_open,
                          --   guard_request/response, stream_mode, loopback target
-  cato_client.lua        -- REST /fw/v1/analyze (non-stream paths)
-  cato_ws_bridge.lua     -- duplex WS bridge (this spike, hardened)
+  cato_networks_client.lua        -- REST /fw/v1/analyze (non-stream paths)
+  cato_networks_ws_bridge.lua     -- duplex WS bridge (this spike, hardened)
   filters/
     guard-request.lua    -- REQ_TRANSFORMATION (REST)
     guard-response.lua   -- RES_TRANSFORMATION (REST, non-stream)
     stream-bridge.lua    -- access-phase takeover for stream=true
-spec/03-plugins/NN-ai-cato-guard/
+spec/03-plugins/NN-ai-cato-networks-guard/
     00-config_spec / 01-unit_spec / 02-integration_spec (+ streaming test)
 ```
 
 Non-streaming requests stay on Kong's idiomatic AI filter pipeline
-(`REQ_TRANSFORMATION` / `RES_TRANSFORMATION` calling Cato's REST
+(`REQ_TRANSFORMATION` / `RES_TRANSFORMATION` calling Cato Networks' REST
 `/fw/v1/analyze`). Only `stream=true` responses take the takeover bridge.
 Optionally, the bridge's upstream call targets the local ai-proxy-backed route
 over loopback, preserving ai-proxy's provider normalization + analytics while
 the plugin owns the client-facing stream.
 
-Headers carried on both REST and WS: `Authorization: Bearer`, `x-cato-call-id`
-(Kong request id), `x-cato-user-email`, `x-cato-session-id`,
-`x-cato-gateway-key-alias` (= `app_name`), `x-cato-kong-version`. Plus plugin
+Headers carried on both REST and WS: `Authorization: Bearer`, `x-cato-networks-call-id`
+(Kong request id), `x-cato-networks-user-email`, `x-cato-networks-session-id`,
+`x-cato-networks-gateway-key-alias` (= `app_name`), `x-cato-networks-kong-version`. Plus plugin
 registration in `kong/constants.lua` and the rockspec.
