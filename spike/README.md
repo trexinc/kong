@@ -18,13 +18,36 @@ in-Kong design is dead and the guardrail must be a sidecar.
 spike/
   kong/plugins/spike-stream-bridge/   handler.lua, schema.lua  (the staged plugin)
   mocks/nginx.conf                    SSE upstream (:9000) + Cato Networks WS (:9001)
-  run/kong.yml                        DB-less config, one route per stage
-  run/kong.conf                       DB-less Kong config
+  run/docker-compose.yml              Kong + mocks, fully containerized  (PRIMARY)
+  run/kong.docker.yml                 DB-less config for compose (service-name hosts)
+  run/kong.yml                        DB-less config for a local Kong binary (127.0.0.1)
+  run/kong.conf                       DB-less Kong config for a local Kong binary
   run/test.sh                         curl -N driver + hold-back safety assertion
   NOTES.md                            findings + go/no-go (fill in after running)
 ```
 
-## Run (in a Kong / OpenResty dev environment)
+## Run — Docker (recommended; needs only Docker Desktop)
+
+The OSS Kong Homebrew formula was dropped, so run everything in containers.
+Both the mocks (OpenResty image) and Kong (official image) come up via Compose;
+nothing is installed on the host.
+
+```bash
+cd spike/run
+docker compose up                 # Ctrl-C to stop; `docker compose down` to clean up
+
+# in another terminal:
+./test.sh                         # drives http://127.0.0.1:8000
+
+# iterate:
+docker compose restart kong       # after editing handler.lua / schema.lua
+docker compose restart mocks      # after editing mocks/nginx.conf
+```
+
+Plugin logs appear on the `kong` container's stdout (`docker compose logs -f kong`).
+Mock WS logs: `docker compose logs -f mocks`.
+
+## Run — local Kong binary (alternative, if you have one)
 
 ```bash
 # 1. mocks

@@ -1,0 +1,42 @@
+# THROWAWAY spike — fully containerized. Needs only Docker Desktop.
+#
+#   cd spike/run
+#   docker compose up        # Ctrl-C to stop; `docker compose down` to clean up
+#   ./test.sh                # in another terminal (drives http://127.0.0.1:8000)
+#
+# Edit handler.lua, then `docker compose restart kong` to reload the plugin.
+# Edit mocks/nginx.conf, then `docker compose restart mocks`.
+
+services:
+  # OpenResty running the spike mocks: SSE upstream + Cato Networks WS.
+  mocks:
+    image: openresty/openresty:alpine
+    volumes:
+      - ../mocks/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+    ports:
+      - "9000:9000"   # exposed for direct debugging (curl -N http://127.0.0.1:9000/sse)
+      - "9001:9001"
+
+  # Kong OSS, DB-less, with the spike plugin mounted on the Lua package path.
+  kong:
+    image: kong:3.6
+    depends_on:
+      - mocks
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /spike/run/kong.docker.yml
+      KONG_PLUGINS: bundled,spike-stream-bridge
+      # /spike is the mounted spike/ dir, so kong.plugins.spike-stream-bridge.*
+      # resolves to /spike/kong/plugins/spike-stream-bridge/*.lua
+      KONG_LUA_PACKAGE_PATH: /spike/?.lua;;
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_LOG_LEVEL: info
+      # surface plugin logs on the container's stdout/stderr
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - ..:/spike:ro      # mounts the whole spike/ dir read-only at /spike
+    ports:
+      - "8000:8000"       # proxy — test.sh targets this
+      - "8001:8001"       # admin

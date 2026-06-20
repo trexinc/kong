@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # THROWAWAY spike driver. Validates the streaming WS-bridge in a Kong dev env.
 #
-# Prereqs (run in your Kong/OpenResty dev environment — NOT this repo container):
-#   1. Start the mocks:
-#        cd ../mocks && mkdir -p logs && openresty -p "$PWD" -c nginx.conf
-#   2. Start Kong DB-less with the spike plugin on the package path:
-#        cd ../run
-#        KONG_LUA_PACKAGE_PATH="$(cd .. && pwd)/?.lua;;" \
-#          kong start -c kong.conf
-#   3. Run this script:
+# Prereqs — bring up Kong + mocks first. Easiest (Docker, this dir):
+#        docker compose up
+# Or with a local Kong binary + OpenResty (see README.md "local Kong binary").
+# Then, in another terminal:
 #        ./test.sh
 #
 set -uo pipefail
