@@ -1,0 +1,69 @@
+# THROWAWAY spike DB-less config for docker-compose (service-name hosts).
+#
+# One serviceless-style "spike" service (never actually proxied — the plugin
+# takes over in the access phase) with one route per stage in test.sh.
+# Hosts are Compose service names: the mocks container is reachable at
+# mocks:9000 (SSE) and mocks:9001 (Cato WS).
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: spike
+    # Placeholder upstream; spike-stream-bridge terminates the request in
+    # `access`, so this is never dialed. Kong just requires a service URL.
+    url: http://mocks:9000
+    routes:
+      # STEP 1 (GATE): incremental ngx.print/flush from access, no I/O.
+      - name: spike-static
+        paths: ["/spike/static"]
+        strip_path: false
+        plugins:
+          - name: spike-stream-bridge
+            config:
+              stage: static
+              chunk_count: 5
+              chunk_delay_ms: 300
+
+      # STEP 2: stream the mock upstream SSE body straight to the client.
+      - name: spike-upstream
+        paths: ["/spike/upstream"]
+        strip_path: false
+        plugins:
+          - name: spike-stream-bridge
+            config:
+              stage: upstream
+              upstream_url: http://mocks:9000/sse
+
+      # STEP 3: outbound WS round-trip from access.
+      - name: spike-ws
+        paths: ["/spike/ws"]
+        strip_path: false
+        plugins:
+          - name: spike-stream-bridge
+            config:
+              stage: ws
+              cato_ws_url: ws://mocks:9001/analyze
+              chunk_count: 4
+
+      # STEP 4: full duplex hold-back bridge (clean scenario).
+      - name: spike-bridge
+        paths: ["/spike/bridge"]
+        strip_path: false
+        plugins:
+          - name: spike-stream-bridge
+            config:
+              stage: bridge
+              upstream_url: http://mocks:9000/sse
+              cato_ws_url: ws://mocks:9001/analyze
+
+      # STEP 5: block scenario — withheld chunk must never leak.
+      # Longer path prefix than /spike/bridge, so this route wins for this req.
+      - name: spike-bridge-block
+        paths: ["/spike/bridge-block"]
+        strip_path: false
+        plugins:
+          - name: spike-stream-bridge
+            config:
+              stage: bridge
+              upstream_url: http://mocks:9000/sse
+              cato_ws_url: ws://mocks:9001/analyze?scenario=block&block_at=3

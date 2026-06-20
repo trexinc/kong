@@ -161,6 +161,12 @@ local function run_ws(conf)
   end
 
   begin_stream()
+
+  -- The mock guardrail is asynchronous with lookahead: a chunk's verdict is
+  -- only released once the NEXT chunk arrives, and the last one flushes on
+  -- `upstream_done`. So we cannot do lockstep send/recv (it would deadlock on
+  -- the first, withheld verdict). Send all pings, signal upstream_done, then
+  -- drain verdict frames until `done`.
   for i = 1, conf.chunk_count do
     local payload = cjson.encode({ type = "data", id = i, data = "ping " .. i })
     local sent, send_err = wb:send_text(payload)
@@ -168,12 +174,24 @@ local function run_ws(conf)
       kong.log.err("spike: ws send failed: ", send_err)
       break
     end
+  end
+  wb:send_text(cjson.encode({ type = "upstream_done" }))
+
+  while true do
     local data, typ, recv_err = wb:recv_frame()
     if not data then
-      kong.log.err("spike: ws recv failed: ", recv_err)
+      if recv_err and recv_err ~= "timeout" then
+        kong.log.err("spike: ws recv failed: ", recv_err)
+        break
+      end
+      -- timeout: keep waiting for the next verdict
+    elseif typ == "close" then
       break
-    end
-    if typ == "text" then
+    elseif typ == "text" then
+      local verdict = cjson.decode(data)
+      if verdict and verdict.type == "done" then
+        break
+      end
       emit(sse("ws-echo", data))
     end
   end
