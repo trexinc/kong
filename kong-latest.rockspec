@@ -638,6 +638,10 @@ build = {
     ["kong.plugins.ai-response-transformer.filters.transform-response"] = "kong/plugins/ai-response-transformer/filters/transform-response.lua",
     ["kong.plugins.ai-response-transformer.schema"] = "kong/plugins/ai-response-transformer/schema.lua",
 
+    ["kong.plugins.ai-cato-networks-guard.handler"] = "kong/plugins/ai-cato-networks-guard/handler.lua",
+    ["kong.plugins.ai-cato-networks-guard.schema"] = "kong/plugins/ai-cato-networks-guard/schema.lua",
+    ["kong.plugins.ai-cato-networks-guard.cato_client"] = "kong/plugins/ai-cato-networks-guard/cato_client.lua",
+
     ["kong.llm"] = "kong/llm/init.lua",
     ["kong.llm.schemas"] = "kong/llm/schemas/init.lua",
     ["kong.llm.drivers.shared"] = "kong/llm/drivers/shared.lua",
