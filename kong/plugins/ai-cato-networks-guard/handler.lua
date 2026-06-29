@@ -4,7 +4,7 @@
 --
 --   request           : block / anonymize  (REST /fw/v1/analyze, hook=pre_call)
 --   buffered response : block / anonymize  (REST /fw/v1/analyze, hook=output)
---   streaming response: block only         (per-window WS to /fw/v1/analyze/stream)
+--   streaming response: block only         (per-window REST /fw/v1/analyze, hook=output)
 --
 -- NOTE: requires Kong Gateway Enterprise (kong.llm.plugin.guardrail_plugin is an
 -- EE module). It will not load on OSS Kong.
@@ -12,7 +12,6 @@ local factory       = require("kong.llm.plugin.guardrail_plugin")
 local ai_plugin_ctx = require("kong.llm.plugin.ctx")
 local cjson         = require("cjson.safe")
 local cato          = require("kong.plugins.ai-cato-networks-guard.cato_client")
-local cato_stream   = require("kong.plugins.ai-cato-networks-guard.cato_stream")
 
 local kong = kong
 
@@ -117,21 +116,25 @@ local function guard_buffered_response(conf)
 end
 
 
--- Streaming: forward each accumulated window to Cato over WS; block-only.
+-- Streaming: analyze each accumulated window via REST; block-only (the
+-- framework streams to the client optimistically and cannot hold back or
+-- rewrite tokens, so masking is intentionally not applied here).
 local function guard_stream_response(conf, chunk)
   if type(chunk) ~= "string" or chunk == "" then
     return ALLOW
   end
 
   local ctx = cato.request_context(conf)
-  local verdict, err = cato_stream.guard_window(conf, chunk, ctx)
-  if not verdict then
+  local messages = { { role = "assistant", content = chunk } }
+  local analysis, err = cato.analyze(conf, messages, "output", ctx)
+  if not analysis then
     return nil, err
   end
 
-  if verdict.block then
-    return { block = true, block_message = verdict.block_message,
-             metrics = { output_block_reason = verdict.block_message or "blocked" } }
+  local action, detection_message = cato.interpret_output(analysis)
+  if action == "block_action" then
+    return { block = true, block_message = detection_message,
+             metrics = { output_block_reason = detection_message } }
   end
 
   return ALLOW
