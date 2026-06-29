@@ -64,12 +64,18 @@ function _M.stream_url(conf)
 end
 
 
--- POST messages to the firewall for analysis. Returns parsed table, or nil + err.
-function _M.analyze(conf, messages, hook, ctx)
+-- POST messages (and optional tool definitions) to the firewall for analysis.
+-- Returns parsed table, or nil + err.
+function _M.analyze(conf, messages, hook, ctx, tools)
   local headers = _M.build_headers(conf, hook, ctx)
   headers["Content-Type"] = "application/json"
 
-  local body = cjson.encode({ messages = messages })
+  local payload = { messages = messages }
+  if type(tools) == "table" then
+    payload.tools = tools
+  end
+
+  local body = cjson.encode(payload)
   if not body then
     return nil, "failed to encode analyze request"
   end
@@ -134,6 +140,30 @@ function _M.interpret_request(res)
     end
   end
   return action, nil, nil
+end
+
+
+-- Apply per-index redacted content onto the original messages, preserving every
+-- other field (tool_calls, tool_call_id, name, ...). Cato returns redacted
+-- content aligned to the input message order; we only swap `content`.
+function _M.merge_redacted_content(messages, redacted)
+  local out = {}
+  for i = 1, #messages do
+    local copy = {}
+    for k, v in pairs(messages[i]) do
+      copy[k] = v
+    end
+    local r = redacted[i]
+    if r and r.content ~= nil then
+      copy.content = r.content
+    end
+    out[i] = copy
+  end
+  -- extra redacted messages beyond the original set (rare)
+  for i = #messages + 1, #redacted do
+    out[i] = { role = redacted[i].role, content = redacted[i].content }
+  end
+  return out
 end
 
 

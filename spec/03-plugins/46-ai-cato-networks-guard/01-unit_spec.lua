@@ -73,6 +73,34 @@ describe(PLUGIN_NAME .. ": (cato_client interpret_request)", function()
 end)
 
 
+describe(PLUGIN_NAME .. ": (cato_client merge_redacted_content)", function()
+  it("replaces content by index while preserving tool-call fields", function()
+    local original = {
+      { role = "user", content = "my SSN is 123-45-6789" },
+      { role = "assistant", content = nil, tool_calls = {
+        { id = "call_1", type = "function",
+          ["function"] = { name = "lookup", arguments = "{\"ssn\":\"123-45-6789\"}" } },
+      } },
+      { role = "tool", tool_call_id = "call_1", name = "lookup", content = "result" },
+    }
+    local redacted = {
+      { role = "user", content = "my SSN is [REDACTED]" },
+      { role = "assistant", content = nil },
+      { role = "tool", content = "result" },
+    }
+
+    local merged = cato.merge_redacted_content(original, redacted)
+
+    assert.equals("my SSN is [REDACTED]", merged[1].content)
+    -- tool_calls preserved on the assistant message
+    assert.same(original[2].tool_calls, merged[2].tool_calls)
+    -- tool_call_id / name preserved on the tool message
+    assert.equals("call_1", merged[3].tool_call_id)
+    assert.equals("lookup", merged[3].name)
+  end)
+end)
+
+
 describe(PLUGIN_NAME .. ": (cato_client interpret_output)", function()
   it("returns the last redacted message content on anonymize", function()
     local action, _, redacted_output = cato.interpret_output({

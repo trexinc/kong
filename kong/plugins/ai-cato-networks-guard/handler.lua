@@ -47,7 +47,10 @@ local function guard_request(conf)
   end
 
   local ctx = cato.request_context(conf)
-  local analysis, err = cato.analyze(conf, messages, "pre_call", ctx)
+  -- Forward tool definitions too, so injection hidden in tool descriptions /
+  -- parameter schemas is screened. Tool-call messages are already in `messages`.
+  local tools = type(request_table.tools) == "table" and request_table.tools or nil
+  local analysis, err = cato.analyze(conf, messages, "pre_call", ctx, tools)
   if not analysis then
     return nil, err
   end
@@ -63,7 +66,10 @@ local function guard_request(conf)
     for k, v in pairs(request_table) do
       new_body[k] = v
     end
-    new_body.messages = redacted
+    -- Merge redacted content into the original messages so tool_calls /
+    -- tool_call_id / name are preserved (rebuilding {role,content} would break
+    -- tool-calling conversations).
+    new_body.messages = cato.merge_redacted_content(messages, redacted)
     return { masked = true, body = new_body, metrics = { input_masked = true } }
   end
 
@@ -80,12 +86,22 @@ local function guard_buffered_response(conf)
   local parsed = cjson.decode(body)
   local choice  = type(parsed) == "table" and type(parsed.choices) == "table" and parsed.choices[1]
   local message = type(choice) == "table" and choice.message
-  local content = type(message) == "table" and message.content
-  if type(content) ~= "string" then
-    return ALLOW   -- nothing analyzable
+  if type(message) ~= "table" then
+    return ALLOW
   end
 
-  -- Build the conversation (request messages + assistant answer) for context.
+  -- Analyzable if there is text/multimodal content OR a tool call. For tool
+  -- calls the payload lives in message.tool_calls[].function.arguments, not in
+  -- content, so we must inspect the whole assistant message.
+  local content   = message.content
+  local has_content = type(content) == "string" or type(content) == "table"
+  local has_tool  = type(message.tool_calls) == "table" and #message.tool_calls > 0
+  if not (has_content or has_tool) then
+    return ALLOW
+  end
+
+  -- Build the conversation (request messages + the assistant message, including
+  -- its tool_calls) for context.
   local messages = {}
   local req_messages = request_messages()
   if req_messages then
@@ -93,7 +109,7 @@ local function guard_buffered_response(conf)
       messages[i] = req_messages[i]
     end
   end
-  messages[#messages + 1] = { role = "assistant", content = content }
+  messages[#messages + 1] = message
 
   local ctx = cato.request_context(conf)
   local analysis, aerr = cato.analyze(conf, messages, "output", ctx)
@@ -108,6 +124,8 @@ local function guard_buffered_response(conf)
   end
 
   if action == "anonymize_action" and redacted_output and conf.allow_masking then
+    -- Redacts textual content only; tool_calls are preserved as-is (Cato's
+    -- output redaction returns a content string, not structured tool args).
     message.content = redacted_output
     return { masked = true, body = cjson.encode(parsed), metrics = { output_masked = true } }
   end
@@ -119,6 +137,12 @@ end
 -- Streaming: analyze each accumulated window via REST; block-only (the
 -- framework streams to the client optimistically and cannot hold back or
 -- rewrite tokens, so masking is intentionally not applied here).
+-- LIMITATION: the framework's stream accumulator (normalize-sse-chunk's
+-- get_token_text) captures only delta.content / text, NOT
+-- delta.tool_calls[].function.arguments -- so tool-call output is not inspected
+-- while streaming. Tool calls ARE inspected on the request and buffered-response
+-- paths; for streamed tool-call inspection, disable streaming (can_streaming via
+-- guarding) or use a buffered route.
 local function guard_stream_response(conf, chunk)
   if type(chunk) ~= "string" or chunk == "" then
     return ALLOW
